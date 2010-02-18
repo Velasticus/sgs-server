@@ -5,24 +5,25 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.reddwarfserver.server</groupId>
+    <groupId>com.projectdarkstar.server</groupId>
     <artifactId>sgs-server-parent</artifactId>
-    <version>0.10.0-SNAPSHOT</version>
+    <version>0.9.12-SNAPSHOT</version>
   </parent>
 
   <artifactId>sgs-server-internal-api</artifactId>
-  <name>RedDwarf Server Internal API</name>
+  <name>Project Darkstar Server Internal API</name>
   <packaging>jar</packaging>
+  <url>http://www.projectdarkstar.com</url>
   <description>
     The sgs-server-internal-api package produces a jar artifact which
     includes only the classes intended to be exposed for
-    developing RedDwarf services, custom protocols and transports,
+    developing Project Darkstar services, custom protocols and transports,
     authenticators, and other custom internal components.
   </description>
 
   <dependencies>
     <dependency>
-      <groupId>org.reddwarfserver.server</groupId>
+      <groupId>com.projectdarkstar.server</groupId>
       <artifactId>sgs-server-api</artifactId>
     </dependency>
   </dependencies>
@@ -66,6 +67,12 @@
 	    <phase>generate-resources</phase>
 	  </execution>
 	</executions>
+      </plugin>
+
+      <!-- Activate the license plugin to check for license headers -->
+      <plugin>
+	<groupId>com.google.code.maven-license-plugin</groupId>
+        <artifactId>maven-license-plugin</artifactId>
       </plugin>
 
     </plugins>

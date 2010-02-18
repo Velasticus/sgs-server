@@ -5,14 +5,15 @@
   <modelVersion>4.0.0</modelVersion>
 
   <parent>
-    <groupId>org.reddwarfserver.server</groupId>
+    <groupId>com.projectdarkstar.server</groupId>
     <artifactId>sgs-server-parent</artifactId>
-    <version>0.10.0-SNAPSHOT</version>
+    <version>0.9.12-SNAPSHOT</version>
   </parent>
 
   <artifactId>sgs-boot</artifactId>
-  <name>RedDwarf Bootstrapper</name>
+  <name>Project Darkstar Bootstrapper</name>
   <packaging>jar</packaging>
+  <url>http://www.projectdarkstar.com</url>
   <description>
     The sgs-boot module is a standard jar package of sgs classes
     used to bootstrap the server
@@ -55,6 +56,12 @@
 	    <phase>generate-resources</phase>
 	  </execution>
 	</executions>
+      </plugin>
+
+      <!-- Activate the license plugin to check for license headers -->
+      <plugin>
+	<groupId>com.google.code.maven-license-plugin</groupId>
+        <artifactId>maven-license-plugin</artifactId>
       </plugin>
 
       <!-- Use 1.5 for source and target during compile -->
