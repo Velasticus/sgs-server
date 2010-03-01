@@ -749,6 +749,60 @@ public class TestTaskServiceImpl extends Assert {
                 }
         }, taskOwner);
     }
+
+    @Test(timeout=1000)
+    public void testCancelPeriodicTaskWithItself() throws Exception {
+        txnScheduler.runTask(
+            new TestAbstractKernelRunnable() {
+                public void run() {
+                    PeriodicTaskCanceler canceler = new PeriodicTaskCanceler();
+                    dataService.setBinding("canceler", canceler);
+                    PeriodicTaskHandle handle =
+                        taskService.schedulePeriodicTask(canceler, 100L, 100L);
+                    canceler.setHandle(handle);
+                }
+        }, taskOwner);
+        Thread.sleep(300L);
+        txnScheduler.runTask(
+            new TestAbstractKernelRunnable() {
+                public void run() {
+                    PeriodicTaskCanceler canceler = (PeriodicTaskCanceler)
+                            dataService.getBinding("canceler");
+                    Assert.assertEquals(1, canceler.getRunCount());
+		    Assert.assertTrue(canceler.getRanAgain());
+                }
+        }, taskOwner);
+    }
+
+    private static class PeriodicTaskCanceler implements Task, ManagedObject, Serializable {
+
+        private PeriodicTaskHandle handle = null;
+        private int runCount = 0;
+	private boolean ranAgain = false;
+
+        @Override
+        public void run() throws Exception {
+            if (handle != null) {
+                handle.cancel();
+		handle = null;
+                runCount++;
+		AppContext.getTaskManager().scheduleTask(this);
+            } else {
+		ranAgain = true;
+	    }
+        }
+
+        public void setHandle(PeriodicTaskHandle handle) {
+            this.handle = handle;
+        }
+        public int getRunCount() {
+            return runCount;
+        }
+	public boolean getRanAgain() {
+	    return ranAgain;
+	}
+
+    }
     
     private class GetManagedHandleTask extends TestAbstractKernelRunnable {
         ManagedHandle mHandle;
