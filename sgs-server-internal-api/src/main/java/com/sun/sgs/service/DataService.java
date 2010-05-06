@@ -202,4 +202,14 @@ public interface DataService extends DataManager, Service {
      *		problem with the current transaction
      */
     BigInteger nextObjectId(BigInteger objectId);
+
+    /**
+     * Registers a listener to be notified when the data service detects that
+     * another node has made a conflicting access to an object or name binding
+     * on this node.  Registered listeners are notified outside of a
+     * transaction.
+     *
+     * @param	listener a data conflict listener
+     */
+    void addDataConflictListener(DataConflictListener listener);
 }

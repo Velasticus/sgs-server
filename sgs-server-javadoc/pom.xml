@@ -144,9 +144,6 @@
 		</group>
 	      </groups>
 	      <outputDirectory>${project.build.directory}/all-docs</outputDirectory>
-	      <stylesheetfile>
-		${basedir}/src/main/etc/stylesheet.css
-	      </stylesheetfile>
 	    </configuration>
 	  </execution>
 
@@ -191,9 +188,6 @@
 		</group>
 	      </groups>
 	      <outputDirectory>${project.build.directory}/internal-api-docs</outputDirectory>
-	      <stylesheetfile>
-		${basedir}/src/main/etc/stylesheet.css
-	      </stylesheetfile>
 	    </configuration>
 	  </execution>
 
@@ -228,9 +222,6 @@
 	      <finalName>api</finalName>
 	      <subpackages>com.sun.sgs.app:com.sun.sgs.internal:com.sun.sgs.protocol.simple</subpackages>
 	      <outputDirectory>${project.build.directory}/api-docs</outputDirectory>
-	      <stylesheetfile>
-		${basedir}/src/main/etc/stylesheet.css
-	      </stylesheetfile>
 	    </configuration>
 	  </execution>
 

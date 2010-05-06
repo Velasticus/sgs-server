@@ -33,6 +33,7 @@ import com.sun.sgs.impl.service.data.store.DataStoreException;
 import com.sun.sgs.impl.service.data.store.DataStoreImpl;
 import com.sun.sgs.impl.service.data.store.DataStoreProfileProducer;
 import com.sun.sgs.kernel.ComponentRegistry;
+import com.sun.sgs.service.DataConflictListener;
 import com.sun.sgs.service.Transaction;
 import com.sun.sgs.service.TransactionParticipant;
 import com.sun.sgs.service.store.ClassInfoNotFoundException;
@@ -91,7 +92,7 @@ public class TestDataStoreImpl extends Assert {
     protected final ComponentRegistry systemRegistry;
 
     /** An instance of the data store, to test. */
-    protected static DataStore store;
+    protected static volatile DataStore store;
 
     /** Default properties for creating the DataStore. */
     protected Properties props;
@@ -577,6 +578,14 @@ public class TestDataStoreImpl extends Assert {
 
     /* -- Unusual states -- */
     private final Action setObject = new Action() {
+	void setUp() throws Exception {
+	    store.setObject(txn, id, new byte[] { 0 });
+	    long id2 = store.createObject(txn);
+	    store.setObject(txn, id2, new byte[] { 0 });
+	    txn.commit();
+	    txn = createTransaction(UsePrepareAndCommit.ARBITRARY);
+	    store.getObject(txn, id2, false);	    
+	}
 	void run() { store.setObject(txn, id, new byte[] { 0 }); }
     };
     @Test
@@ -718,6 +727,14 @@ public class TestDataStoreImpl extends Assert {
 
     /* -- Unusual states -- */
     private final Action setObjects = new Action() {
+	void setUp() throws Exception {
+	    store.setObject(txn, id, new byte[] { 0 });
+	    long id2 = store.createObject(txn);
+	    store.setObject(txn, id2, new byte[] { 0 });
+	    txn.commit();
+	    txn = createTransaction(UsePrepareAndCommit.ARBITRARY);
+	    store.getObject(txn, id2, false);	    
+	}
 	void run() {
 	    store.setObjects(txn, new long[] { id }, new byte[][] { { 0 } });
 	}
@@ -2028,6 +2045,24 @@ public class TestDataStoreImpl extends Assert {
     @Test
     public void testNextObjectIdShutdown() throws Exception {
 	testShutdown(nextObjectId);
+    }
+
+    /* -- Test addDataConflictListener -- */
+
+    @Test(expected=NullPointerException.class)
+    public void testAddDataConflictListenerNullListener() {
+	store.addDataConflictListener(null);
+    }
+
+    @Test
+    public void testAddDataConflictListener() throws Exception {
+	final DataConflictListener listener = new DataConflictListener() {
+	    public void nodeConflictDetected(
+		Object accessId, long nodeId, boolean forUpdate)
+	    {
+	    }
+	};
+	store.addDataConflictListener(listener);
     }
 
     /* -- Test deadlock -- */

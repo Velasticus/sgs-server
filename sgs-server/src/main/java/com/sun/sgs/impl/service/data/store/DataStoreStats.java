@@ -43,6 +43,7 @@ class DataStoreStats implements DataStoreStatsMXBean {
 
     /* -- Profile operations for the DataStore API -- */
 
+    final ProfileOperation addDataConflictListenerOp;
     final ProfileOperation createObjectOp;
     final ProfileOperation markForUpdateOp;
     final ProfileOperation getObjectOp;
@@ -100,6 +101,8 @@ class DataStoreStats implements DataStoreStatsMXBean {
         ProfileLevel level = ProfileLevel.MAX;
         ProfileDataType type = ProfileDataType.TASK_AND_AGGREGATE;
         
+	addDataConflictListenerOp = 
+            consumer.createOperation("addDataConflictListener", type, level);
 	createObjectOp = 
             consumer.createOperation("createObject", type, level);
 	markForUpdateOp = 
@@ -139,6 +142,12 @@ class DataStoreStats implements DataStoreStatsMXBean {
             consumer.createSample("writtenBytes", type, level);
     }
     
+    /** {@inheritDoc} */
+    public long getAddDataConflictListenerCalls() {
+        return ((AggregateProfileOperation) addDataConflictListenerOp)
+	    .getCount();
+    }
+
     /** {@inheritDoc} */
     public long getGetBindingCalls() {
         return ((AggregateProfileOperation) getBindingOp).getCount();

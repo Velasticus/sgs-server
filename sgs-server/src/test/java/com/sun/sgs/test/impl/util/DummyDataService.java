@@ -26,6 +26,7 @@ import com.sun.sgs.app.ManagedObject;
 import com.sun.sgs.app.ManagedReference;
 import com.sun.sgs.app.NameNotBoundException;
 import com.sun.sgs.app.ObjectNotFoundException;
+import com.sun.sgs.service.DataConflictListener;
 import com.sun.sgs.service.DataService;
 import java.io.Serializable;
 import java.math.BigInteger;
@@ -117,6 +118,8 @@ class DummyDataService
     public BigInteger nextObjectId(BigInteger objectId) {
 	throw new UnsupportedOperationException();
     }
+    public void addDataConflictListener(DataConflictListener listener) { }
+
 	
     /** Get the next name from the set. */
     public String nextServiceBoundName(String name) {

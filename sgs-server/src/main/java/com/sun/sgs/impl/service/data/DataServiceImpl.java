@@ -33,7 +33,10 @@ import com.sun.sgs.impl.service.data.store.DataStoreImpl;
 import com.sun.sgs.impl.service.data.store.DataStoreProfileProducer;
 import com.sun.sgs.impl.service.data.store.net.DataStoreClient;
 import com.sun.sgs.impl.sharedutil.LoggerWrapper;
+import static com.sun.sgs.impl.sharedutil.Objects.checkNull;
 import com.sun.sgs.impl.sharedutil.PropertiesWrapper;
+import static com.sun.sgs.impl.util.
+    AbstractService.checkNonTransactionalContext;
 import com.sun.sgs.impl.util.AbstractKernelRunnable;
 import com.sun.sgs.impl.util.TransactionContextFactory;
 import com.sun.sgs.impl.util.TransactionContextMap;
@@ -41,6 +44,7 @@ import com.sun.sgs.kernel.ComponentRegistry;
 import com.sun.sgs.kernel.NodeType;
 import com.sun.sgs.kernel.TransactionScheduler;
 import com.sun.sgs.profile.ProfileCollector;
+import com.sun.sgs.service.DataConflictListener;
 import com.sun.sgs.service.DataService;
 import com.sun.sgs.service.Transaction;
 import com.sun.sgs.service.TransactionProxy;
@@ -254,6 +258,9 @@ public final class DataServiceImpl implements DataService {
     /** The current state of this instance. */
     private State state = State.UNINITIALIZED;
 
+    /** The transaction proxy. */
+    private final TransactionProxy txnProxy;
+
     /**
      * The number of operations to skip between checks of the consistency of
      * the managed reference table.
@@ -352,6 +359,7 @@ public final class DataServiceImpl implements DataService {
 		throw new NullPointerException(
 		    "The txnProxy argument must not be null");
 	    }
+	    this.txnProxy = txnProxy;
 	    debugCheckInterval = wrappedProps.getIntProperty(
 		DEBUG_CHECK_INTERVAL_PROPERTY, Integer.MAX_VALUE);
 	    detectModifications = wrappedProps.getBooleanProperty(
@@ -712,6 +720,21 @@ public final class DataServiceImpl implements DataService {
 	} catch (RuntimeException e) {
 	    getExceptionLogger(e).logThrow(
 		Level.FINEST, e, "nextObjectId objectId:{0} throws", objectId);
+	    throw e;
+	}
+    }
+
+    /** {@inheritDoc} */
+    public void addDataConflictListener(DataConflictListener listener) {
+	serviceStats.addDataConflictListenerOp.report();
+	try {
+	    checkNull("listener", listener);
+	    checkState();
+	    store.addDataConflictListener(listener);
+	} catch (RuntimeException e) {
+	    getExceptionLogger(e).logThrow(
+		Level.FINEST, e, "addDataConflictListener listener:{0} throws",
+		listener);
 	    throw e;
 	}
     }

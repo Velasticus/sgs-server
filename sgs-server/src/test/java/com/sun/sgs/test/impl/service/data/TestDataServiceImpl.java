@@ -33,6 +33,7 @@ import com.sun.sgs.app.TransactionAbortedException;
 import com.sun.sgs.app.TransactionNotActiveException;
 import com.sun.sgs.app.TransactionTimeoutException;
 import com.sun.sgs.auth.Identity;
+import com.sun.sgs.impl.kernel.LockingAccessCoordinator;
 import com.sun.sgs.impl.kernel.StandardProperties;
 import com.sun.sgs.impl.service.data.DataServiceImpl;
 import com.sun.sgs.impl.service.data.store.DataStoreImpl;
@@ -44,11 +45,14 @@ import com.sun.sgs.impl.service.transaction.TransactionCoordinator;
 import static com.sun.sgs.impl.sharedutil.Objects.uncheckedCast;
 import com.sun.sgs.kernel.ComponentRegistry;
 import com.sun.sgs.kernel.TransactionScheduler;
+import com.sun.sgs.service.DataConflictListener;
 import com.sun.sgs.service.DataService;
+import com.sun.sgs.service.TaskService;
 import com.sun.sgs.service.Transaction;
 import com.sun.sgs.service.TransactionListener;
 import com.sun.sgs.service.TransactionProxy;
 import com.sun.sgs.service.store.DataStore;
+import com.sun.sgs.test.util.ChunkedTask;
 import com.sun.sgs.test.util.DummyManagedObject;
 import com.sun.sgs.test.util.DummyNonDurableTransactionParticipant;
 import com.sun.sgs.test.util.PackageReadResolve;
@@ -62,6 +66,7 @@ import com.sun.sgs.test.util.ProtectedWriteReplace;
 import com.sun.sgs.test.util.PublicConstructor;
 import com.sun.sgs.test.util.PublicReadResolve;
 import com.sun.sgs.test.util.PublicWriteReplace;
+import com.sun.sgs.test.util.RepeatingConcurrentTask;
 import com.sun.sgs.test.util.SgsTestNode;
 import com.sun.sgs.test.util.TestAbstractKernelRunnable;
 import static com.sun.sgs.test.util.UtilDataStoreDb.getLockTimeoutPropertyName;
@@ -75,7 +80,10 @@ import java.lang.reflect.InvocationTargetException;
 import java.math.BigInteger;
 import java.util.Arrays;
 import java.util.Collection;
+import java.util.Collections;
+import java.util.List;
 import java.util.Properties;
+import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.Semaphore;
 import java.util.concurrent.TimeUnit;
@@ -129,6 +137,7 @@ public class TestDataServiceImpl extends Assert {
     private static final String APP_NAME = "TestDataServiceImpl";
     private static SgsTestNode serverNode = null;
     private static TransactionScheduler txnScheduler;
+    private static TaskService taskService;
     private static Identity taskOwner;
     private static TransactionProxy txnProxy;
 
@@ -215,6 +224,7 @@ public class TestDataServiceImpl extends Assert {
             componentRegistry = serverNode.getSystemRegistry();
             txnScheduler =
                     componentRegistry.getComponent(TransactionScheduler.class);
+	    taskService = serverNode.getTaskService();
             taskOwner = txnProxy.getCurrentOwner();
 
             service = (DataServiceImpl) serverNode.getDataService();
@@ -1221,6 +1231,8 @@ public class TestDataServiceImpl extends Assert {
         Properties properties = getProperties();
         properties.setProperty(DataStoreImplClassName + ".directory", dir);
 	properties.setProperty(getLockTimeoutPropertyName(properties), "500");
+	properties.setProperty(LockingAccessCoordinator.LOCK_TIMEOUT_PROPERTY,
+			       "500");
         properties.setProperty("com.sun.sgs.txn.timeout", "1000");
         serverNodeRestart(properties, true);
 
@@ -2667,6 +2679,8 @@ public class TestDataServiceImpl extends Assert {
         Properties properties = getProperties();
         properties.setProperty(DataStoreImplClassName + ".directory", dir);
 	properties.setProperty(getLockTimeoutPropertyName(properties), "500");
+	properties.setProperty(LockingAccessCoordinator.LOCK_TIMEOUT_PROPERTY,
+			       "500");
         properties.setProperty("com.sun.sgs.txn.timeout", "1000");
         serverNodeRestart(properties, true);
 
@@ -3324,104 +3338,124 @@ public class TestDataServiceImpl extends Assert {
 
     @Test 
     public void testNextObjectIdBoundaryIds() throws Exception {
-        txnScheduler.runTask(new TestAbstractKernelRunnable() {
-            public void run() {
-                BigInteger first = service.nextObjectId(null);
-                assertEquals(first, service.nextObjectId(null));
-                assertEquals(first, service.nextObjectId(BigInteger.ZERO));
-                BigInteger last = null;
-                while (true) {
-                    BigInteger id = service.nextObjectId(last);
+	new ChunkedTask(txnScheduler, taskOwner) {
+	    protected boolean runChunk() {
+		ManagedBigInteger last;
+		try {
+		    last = (ManagedBigInteger)
+			service.getBindingForUpdate("last");
+		} catch (NameNotBoundException e) {
+		    last = new ManagedBigInteger(null);
+		    service.setBinding("last", last);
+		    BigInteger first = service.nextObjectId(null);
+		    assertEquals(first, service.nextObjectId(null));
+		    assertEquals(first, service.nextObjectId(BigInteger.ZERO));
+		}
+		while (taskService.shouldContinue()) {
+                    BigInteger id = service.nextObjectId(last.value);
                     if (id == null) {
-                        break;
+			assertEquals(
+			    null, service.nextObjectId(last.value));
+			assertEquals(
+			    null,
+			    service.nextObjectId(
+				BigInteger.valueOf(Long.MAX_VALUE)));
+			service.removeObject(last);
+			service.removeBinding("last");
+			return true;
                     }
-                    last = id;
+                    last.value = id;
                 }
-                assertEquals(null, service.nextObjectId(last));
-                assertEquals(
-                    null,
-                    service.nextObjectId(BigInteger.valueOf(Long.MAX_VALUE)));
-        }}, taskOwner);
+		return false;
+	    }
+	}.runAwaitDone(1000);
     }
 
     @Test 
     public void testNextObjectIdRemoved() throws Exception {
-        class TestTask extends InitialTestRunnable {
+        class TestTask extends ChunkedTask {
             BigInteger dummyId;
             BigInteger dummy2Id;
-            public void run() throws Exception {
-                super.run();
-                DummyManagedObject dummy2 = new DummyManagedObject();
-                dummyId = service.createReference(dummy).getId();
-                dummy2Id = service.createReference(dummy2).getId();
-                /* Make sure dummyId is smaller than dummy2Id */
-                if (dummyId.compareTo(dummy2Id) > 0) {
-                    BigInteger temp = dummyId;
-                    dummyId = dummy2Id;
-                    dummy2Id = temp;
-                    DummyManagedObject dummyTemp = dummy;
-                    dummy = dummy2;
-                    dummy2 = dummyTemp;
-                    service.setBinding("dummy", dummy);
-                }
-                BigInteger id = dummyId;
-                while (true) {
-                    id = service.nextObjectId(id);
-                    assertNotNull("Didn't find dummy2Id after dummyId", id);
-                    if (id.equals(dummy2Id)) {
-                        break;
+	    TestTask() {
+		super(txnScheduler, taskOwner);
+	    }
+            protected boolean runChunk() {
+		ManagedBigInteger last;
+		try {
+		    last = (ManagedBigInteger)
+			service.getBindingForUpdate("last");
+		    if (last.value == null) {
+			service.removeObject(last);
+			service.removeBinding("last");
+			return true;
+		    }
+		    dummy = (DummyManagedObject) service.getBinding("dummy");
+		} catch (NameNotBoundException e) {
+		    dummy = new DummyManagedObject();
+		    service.setBinding("dummy", dummy);
+		    DummyManagedObject dummy2 = new DummyManagedObject();
+		    dummyId = service.createReference(dummy).getId();
+		    dummy2Id = service.createReference(dummy2).getId();
+		    /* Make sure dummyId is smaller than dummy2Id */
+		    if (dummyId.compareTo(dummy2Id) > 0) {
+			BigInteger temp = dummyId;
+			dummyId = dummy2Id;
+			dummy2Id = temp;
+			DummyManagedObject dummyTemp = dummy;
+			dummy = dummy2;
+			dummy2 = dummyTemp;
+			service.setBinding("dummy", dummy);
+		    }
+		    last = new ManagedBigInteger(dummyId);
+		    service.setBinding("last", last);
+		}
+                while (taskService.shouldContinue()) {
+                    last.value = service.nextObjectId(last.value);
+                    assertNotNull("Didn't find dummy2Id after dummyId",
+				  last.value);
+                    if (last.value.equals(dummy2Id)) {
+			last.value = null;
+			break;
                     }
                 }
+		return false;
             }
         }
 
         final TestTask task = new TestTask();
-        txnScheduler.runTask(task, taskOwner);
+        task.runAwaitDone(1000);
 
-        txnScheduler.runTask(new TestAbstractKernelRunnable() {
-            public void run() {
-                dummy = (DummyManagedObject) service.getBinding("dummy");
-                service.removeObject(dummy);
-                BigInteger id = null;
-                while (true) {
-                    id = service.nextObjectId(id);
-                    if (id == null) {
-                        break;
+	new ChunkedTask(txnScheduler, taskOwner) {
+	    private boolean foundId2;
+            protected boolean runChunk() {
+		ManagedBigInteger last;
+		try {
+		    last = (ManagedBigInteger)
+			service.getBindingForUpdate("last");
+		} catch (NameNotBoundException e) {
+		    dummy = (DummyManagedObject) service.getBinding("dummy");
+		    service.removeObject(dummy);
+		    last = new ManagedBigInteger(null);
+		    service.setBinding("last", last);
+		}		    
+                while (taskService.shouldContinue()) {
+                    last.value = service.nextObjectId(last.value);
+		    if (task.dummy2Id.equals(last.value)) {
+			foundId2 = true;
+		    } else if (last.value == null) {
+			service.removeObject(last);
+			service.removeBinding("last");
+			assertTrue(
+			    "Didn't find dummy2Id after removed dummyId",
+			    foundId2);
+			return true;
                     }
                     assertFalse("Shouldn't find ID removed in this txn",
-                                task.dummyId.equals(id));
+                                task.dummyId.equals(last.value));
                 }
-                id = task.dummyId;
-                while (true) {
-                    id = service.nextObjectId(id);
-                    assertNotNull("Didn't find dummy2Id after removed dummyId", id);
-                    if (id.equals(task.dummy2Id)) {
-                        break;
-                    }
-                }
-        }}, taskOwner);
-
-        txnScheduler.runTask(new TestAbstractKernelRunnable() {
-            public void run() {
-                BigInteger id = null;
-                while (true) {
-                    id = service.nextObjectId(id);
-                    if (id == null) {
-                        break;
-                    }
-                    assertFalse("Shouldn't find ID removed in last txn",
-                                task.dummyId.equals(id));
-                }
-
-                id = task.dummyId;
-                while (true) {
-                    id = service.nextObjectId(id);
-                    assertNotNull("Didn't find dummy2Id after removed dummyId", id);
-                    if (id.equals(task.dummy2Id)) {
-                        break;
-                    }
-                }
-        }}, taskOwner);
+		return false;
+	    }
+	}.runAwaitDone(1000);
     }
 
     /**
@@ -3461,19 +3495,30 @@ public class TestDataServiceImpl extends Assert {
                 service.removeObject(dummy.getNext());
         }}, taskOwner);
 
-        txnScheduler.runTask(new TestAbstractKernelRunnable() {
-            public void run() {
+	new ChunkedTask(txnScheduler, taskOwner) {
+            protected boolean runChunk() {
+		ManagedBigInteger last;
+		try {
+		    last = (ManagedBigInteger)
+			service.getBindingForUpdate("last");
+		} catch (NameNotBoundException e) {
+		    last = new ManagedBigInteger(task.dummyId);
+		    service.setBinding("last", last);
+		}
                 dummy = (DummyManagedObject) service.getBinding("dummy");
-                BigInteger id = task.dummyId;
-                while (true) {
-                    id = service.nextObjectId(id);
-                    if (id == null) {
-                        break;
+                while (taskService.shouldContinue()) {
+                    last.value = service.nextObjectId(last.value);
+                    if (last.value == null) {
+			service.removeObject(last);
+			service.removeBinding("last");
+			return true;
                     }
                     assertFalse("Shouldn't get removed dummy2 ID",
-                                id.equals(task.dummy2Id));
+                                last.value.equals(task.dummy2Id));
                 }
-        }}, taskOwner);
+		return false;
+	    }
+	}.runAwaitDone(1000);
     }
 
     /* -- Unusual states -- */
@@ -3515,6 +3560,69 @@ public class TestDataServiceImpl extends Assert {
     @Test 
     public void testNextObjectIdShutdown() throws Exception {
 	testShutdown(nextObjectId);
+    }
+
+    /* -- Test addDataConflictListener -- */
+
+    @Test(expected=NullPointerException.class)
+    public void testAddDataConflictListenerNullListener() {
+	service.addDataConflictListener(null);
+    }
+
+    @Test
+    public void testAddDataConflictListenerInTransaction() throws Exception {
+	final DataConflictListener listener = new DataConflictListener() {
+	    public void nodeConflictDetected(
+		Object accessId, long nodeId, boolean forUpdate)
+	    {
+	    }
+	};
+	service.addDataConflictListener(listener);
+    }
+
+    @Test
+    public void testAddDataConflictListenerOutsideTransaction()
+	throws Exception
+    {
+	final AtomicReference<Throwable> exception =
+	    new AtomicReference<Throwable>();
+	final DataConflictListener listener = new DataConflictListener() {
+	    public void nodeConflictDetected(
+		Object accessId, long nodeId, boolean forUpdate)
+	    {
+	    }
+	};
+	txnScheduler.runTask(new TestAbstractKernelRunnable() {
+	    public void run() {
+		try {
+		    service.addDataConflictListener(listener);
+		} catch (Throwable t) {
+		    exception.set(t);
+		}
+	    }
+	}, taskOwner);
+	Throwable e = exception.get();
+	if (e != null) {
+	    throw new RuntimeException("Unexpected exception: " + e, e);
+	}
+    }
+
+    @Test
+    public void testAddDataConflictListenerAfterShutdown() throws Exception {
+	final DataConflictListener listener = new DataConflictListener() {
+	    public void nodeConflictDetected(
+		Object accessId, long nodeId, boolean forUpdate)
+	    {
+	    }
+	};
+        serverNode.shutdown(false);
+        serverNode = null;
+	try {
+	    service.addDataConflictListener(listener);
+	    fail("Expected IllegalStateException");
+	} catch (IllegalStateException e) {
+	    System.err.println(e);
+	}
     }
 
     /* -- Test ManagedReference.get -- */
@@ -4166,6 +4274,8 @@ public class TestDataServiceImpl extends Assert {
         Properties properties = getProperties();
         properties.setProperty(DataStoreImplClassName + ".directory", dir);
 	properties.setProperty(getLockTimeoutPropertyName(properties), "500");
+	properties.setProperty(LockingAccessCoordinator.LOCK_TIMEOUT_PROPERTY,
+			       "500");
         properties.setProperty("com.sun.sgs.txn.timeout", "1000");
         serverNodeRestart(properties, true);
 
@@ -5116,6 +5226,207 @@ public class TestDataServiceImpl extends Assert {
 	}
     }
 
+    @Test
+    public void testCreateBindingsConcurrently() throws Exception {
+	txnScheduler.runTask(new TestAbstractKernelRunnable() {
+	    public void run() {
+		taskService.scheduleTask(new CreateBindingsTask(1));
+		taskService.scheduleTask(new CreateBindingsTask(2));
+		taskService.scheduleTask(new CreateBindingsTask(3));
+	    }
+	}, taskOwner);
+	RepeatingConcurrentTask.awaitDone(20000);
+    }
+
+    static class CreateBindingsTask extends RepeatingConcurrentTask {
+	private static final long serialVersionUID = 1;
+	CreateBindingsTask(int index) {
+	    super(txnProxy, index, 10, 100);
+	}
+	protected void runInternal() {
+	    String name = String.format("create-%04d", index);
+	    System.err.println("Binding " + name);
+	    service.setBinding(name, new DummyManagedObject());
+	    index += nextIndexOffset;
+	}
+    }
+
+    @Test
+    public void testCreateRemoveBindingsConcurrently() throws Exception {
+	txnScheduler.runTask(new TestAbstractKernelRunnable() {
+	    public void run() {
+		taskService.scheduleTask(new CreateRemoveBindingsTask(1));
+		taskService.scheduleTask(new CreateRemoveBindingsTask(2));
+		taskService.scheduleTask(new CreateRemoveBindingsTask(3));
+	    }
+	}, taskOwner);
+	RepeatingConcurrentTask.awaitDone(20000);
+    }
+
+    static class CreateRemoveBindingsTask extends RepeatingConcurrentTask {
+	private static final long serialVersionUID = 1;
+	private boolean remove = false;
+	CreateRemoveBindingsTask(int index) {
+	    super(txnProxy, index, 10, 100);
+	}
+	protected void runInternal() {
+	    String name = String.format("create-remove-%04d", index);
+	    if (!remove) {
+		System.err.println("Create binding " + name);
+		service.setBinding(name, new DummyManagedObject());
+		remove = true;
+	    } else {
+		System.err.println("Remove binding " + name);
+		service.removeBinding(name);
+		remove = false;
+		index += nextIndexOffset;
+	    }
+	}
+    }
+
+    /** Test random concurrent name binding accesses. */
+    @Test
+    public void testConcurrentBindings() throws Exception {
+	final int bindings = Integer.getInteger("test.bindings", 50);
+	int threads = Integer.getInteger("test.threads", 4);
+	int repeat = Integer.getInteger("test.repeat", 100);
+	int wait = Integer.getInteger("test.wait", 60);
+	System.err.println("Testing with bindings:" + bindings +
+			   ", threads:" + threads +
+			   ", repeat:" + repeat +
+			   ", wait:" + wait);
+	long start = System.currentTimeMillis();
+	/* Set half the bindings */
+	new ChunkedTask(txnScheduler, taskOwner) {
+	    protected boolean runChunk() {
+		ManagedInteger remaining;
+		DummyManagedObject dummy;
+		try {
+		    remaining =
+			(ManagedInteger) service.getBinding("remaining");
+		    dummy = (DummyManagedObject) service.getBinding("dummy");
+		} catch (NameNotBoundException e) {
+		    remaining = new ManagedInteger(bindings / 2);
+		    service.setBinding("remaining", remaining);
+		    dummy = new DummyManagedObject();
+		    service.setBinding("dummy", dummy);
+		}
+		if (remaining.value == 0) {
+		    service.removeBinding("remaining");
+		    return true;
+		} else {
+		    service.markForUpdate(remaining);
+		    while (remaining.value > 0 &&
+			   taskService.shouldContinue())
+		    {
+			service.setBinding(
+			    String.valueOf(--remaining.value), dummy);
+		    }
+		    return false;
+		}
+	    } }.runAwaitDone(1000);
+	/* Random work */
+	CountDownLatch done = new CountDownLatch(threads);
+	AtomicReference<Throwable> failure = new AtomicReference<Throwable>();
+	for (int i = 0; i < threads; i++) {
+	    txnScheduler.scheduleTask(
+		new RandomWorkTask(bindings, repeat, done, failure),
+		taskOwner);
+	}
+	assertTrue("Tasks not completed", done.await(wait, TimeUnit.SECONDS));
+	if (failure.get() != null) {
+	    throw new RuntimeException(
+		"Unexpected exception: " + failure.get().getMessage(),
+		failure.get());
+	}
+	/* Remove all bindings */
+	new ChunkedTask(txnScheduler, taskOwner) {
+	    protected boolean runChunk() {
+		ManagedInteger remaining;
+		try {
+		    remaining = (ManagedInteger) service.getBinding("remaining");
+		} catch (NameNotBoundException e) {
+		    remaining = new ManagedInteger(bindings);
+		    service.setBinding("remaining", remaining);
+		}
+		if (remaining.value == 0) {
+		    service.removeBinding("remaining");
+		    return true;
+		} else {
+		    service.markForUpdate(remaining);
+		    while (remaining.value > 0 && taskService.shouldContinue()) {
+			try {
+			    service.removeBinding(
+				String.valueOf(--remaining.value));
+			} catch (NameNotBoundException e) {
+			}
+		    }
+		    return false;
+		}
+	    } }.runAwaitDone(1000);
+	long time = System.currentTimeMillis() - start;
+	System.err.println("Test finished in " + (time / 1000) + " seconds");
+    }
+
+    /** Get, set, and remove random bindings */
+    private class RandomWorkTask extends TestAbstractKernelRunnable {
+	private final int bindings;
+	private final AtomicInteger remaining;
+	private final CountDownLatch done;
+	private final AtomicReference<Throwable> failure;
+	private final Random rand = new Random();
+	RandomWorkTask(int bindings, int repeat, CountDownLatch done,
+		       AtomicReference<Throwable> failure)
+	{
+	    this.bindings = bindings;
+	    remaining = new AtomicInteger(repeat);
+	    this.done = done;
+	    this.failure = failure;
+	}
+	public void run() {
+	    if (remaining.get() == 0) {
+		done.countDown();
+		return;
+	    }
+	    try {
+		List<Character> ops = Arrays.asList('r', 'r', 'w', 'x');
+		Collections.shuffle(ops);
+		for (char op : ops) {
+		    String name = String.valueOf(rand.nextInt(bindings));
+		    switch (op) {
+		    case 'r':
+			try {
+			    service.getBinding(name);
+			} catch (NameNotBoundException e) {
+			}
+			break;
+		    case 'w':
+			service.setBinding(name, service.getBinding("dummy"));
+			break;
+		    case 'x':
+			try {
+			    service.removeBinding(name);
+			} catch (NameNotBoundException e) {
+			}
+			break;
+		    default:
+			throw new AssertionError();
+		    }
+		}
+		remaining.getAndDecrement();
+		txnScheduler.scheduleTask(this, taskOwner);
+	    } catch (RuntimeException e) {
+		if (!isRetryable(e)) {
+		    done.countDown();
+		    failure.set(e);
+		    System.err.println(
+			"Failure with remaining: " + remaining.get());
+		}
+		throw e;
+	    }
+	}
+    }
+
     /* -- App and service binding methods -- */
 
     ManagedObject getBinding(boolean app, DataService service, String name) {
@@ -5793,6 +6104,7 @@ public class TestDataServiceImpl extends Assert {
 	    return null;
 	}
 	public long nextObjectId(Transaction txn, long oid) { return -1; }
+	public void addDataConflictListener(DataConflictListener listener) { }
 	public void setObjectDescription(
 	    Transaction txn, long oid, Object description)
 	{ }
@@ -5894,5 +6206,24 @@ public class TestDataServiceImpl extends Assert {
 	return
 	    t instanceof ExceptionRetryStatus &&
 	    ((ExceptionRetryStatus) t).shouldRetry();
+    }
+
+
+    /** A managed object that contains a big integer, which may be null. */
+    static class ManagedBigInteger implements ManagedObject, Serializable {
+	private static final long serialVersionUID = 1;
+	BigInteger value;
+	ManagedBigInteger(BigInteger value) {
+	    this.value = value;
+	}
+    }
+
+    /** A managed object that contains an integer, which may be null. */
+    static class ManagedInteger implements ManagedObject, Serializable {
+	private static final long serialVersionUID = 1;
+	int value;
+	ManagedInteger(int value) {
+	    this.value = value;
+	}
     }
 }
